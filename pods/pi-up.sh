@@ -90,19 +90,19 @@ cmd_up() {
         esac
     done
 
-    # Check if we already have an active pod
+    # ── Single-instance guard ────────────────────────────────────────────────
+    # Only one pod allowed at a time to prevent runaway costs.
+    # TODO: revisit — allow multiple pods with a budget cap or confirmation prompt.
     local existing
     existing="$(get_active_pod)"
     if [ -n "$existing" ]; then
-        warn "Active pod found: $existing"
-        # Verify it's still running
         local status
         status=$(prime pods status "$existing" --output json --plain 2>/dev/null | jq -r '.status // "unknown"') || status="unknown"
         if [ "$status" = "running" ]; then
-            ok "Pod $existing is already running. Use 'pi-up.sh ssh' to connect."
-            return 0
+            die "Pod $existing is already running. Only one pod allowed at a time.
+  Use 'pi-up.sh ssh' to connect, or 'pi-up.sh down' to terminate it first."
         else
-            warn "Pod $existing status is '$status'. Clearing session and creating new pod."
+            warn "Stale session found (pod $existing, status: $status). Clearing."
             clear_active_pod
         fi
     fi
@@ -255,6 +255,21 @@ cmd_down() {
     require_prime
     local pod_id
     pod_id="$(require_active_pod)"
+
+    # TODO: safe teardown — before terminating, verify:
+    #   1. rsync/scp results back to local machine
+    #   2. confirm git push completed (check for unpushed commits)
+    #   3. prompt user: "Data synced? Terminate? [y/N]"
+    # For now, we just terminate with a warning.
+
+    warn "Make sure you've pulled any results/data from the pod before terminating."
+    echo -n "  Terminate pod $pod_id? [y/N] "
+    read -r confirm
+    if [[ ! "$confirm" =~ ^[yY]$ ]]; then
+        info "Aborted."
+        return 0
+    fi
+
     info "Terminating pod $pod_id..."
     prime pods terminate "$pod_id" --yes --plain
     clear_active_pod
