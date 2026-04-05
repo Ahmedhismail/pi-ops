@@ -12,18 +12,38 @@ echo "============================================"
 echo "  pi-bootstrap: setting up pod"
 echo "============================================"
 
-# ── 1. Install Claude Code ──────────────────────────────────────────────────
+# ── 1. Source uploaded .env (needed for GIT_PAT before clone) ─────────────
+if [ -f "/root/.pi-env-upload" ]; then
+    echo "[..] Loading secrets from uploaded .env..."
+    set -a  # auto-export all sourced vars
+    source /root/.pi-env-upload
+    set +a
+    echo "[OK] Secrets loaded"
+fi
+
+# ── 2. Install Claude Code ──────────────────────────────────────────────────
 if command -v claude &>/dev/null; then
     echo "[OK] Claude Code already installed"
 else
     echo "[..] Installing Claude Code..."
     curl -fsSL https://claude.ai/install.sh | sh
-    # Add to PATH for this session if not already there
     export PATH="$HOME/.claude/bin:$PATH"
     echo "[OK] Claude Code installed"
 fi
 
-# ── 2. Clone or update repo ────────────────────────────────────────────────
+# ── 3. Configure git credentials ──────────────────────────────────────────
+GIT_PAT="${GIT_PAT:-}"
+if [ -n "$GIT_PAT" ]; then
+    echo "[..] Configuring git credentials..."
+    git config --global credential.helper store
+    echo "https://${GIT_PAT}@github.com" > ~/.git-credentials
+    chmod 600 ~/.git-credentials
+    echo "[OK] Git PAT configured"
+else
+    echo "[WARN] No GIT_PAT set — git clone will only work for public repos"
+fi
+
+# ── 4. Clone or update repo ────────────────────────────────────────────────
 if [ -z "$REPO_URL" ]; then
     echo "[SKIP] No PI_REPO_URL set — skipping clone"
 else
@@ -40,14 +60,14 @@ else
         echo "[OK] Repo cloned"
     fi
 
-    # ── 3. Copy .env if it was uploaded ─────────────────────────────────────
+    # ── 5. Copy .env into repo ────────────────────────────────────────────
     if [ -f "/root/.pi-env-upload" ]; then
         cp /root/.pi-env-upload "$REPO_DIR/.env"
         rm /root/.pi-env-upload
         echo "[OK] .env copied into repo"
     fi
 
-    # ── 4. Run setup command ────────────────────────────────────────────────
+    # ── 6. Run setup command ────────────────────────────────────────────────
     echo "[..] Running setup: $SETUP_CMD"
     cd "$REPO_DIR"
     eval "$SETUP_CMD"
