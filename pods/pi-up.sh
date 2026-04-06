@@ -20,7 +20,7 @@ die()   { err "$@"; exit 1; }
 SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
 
 # ── Load config (defaults, then ~/.pi-config.env, then ./pi-config.env) ────
-PI_DEFAULT_GPU="${PI_DEFAULT_GPU:-H100_80GB}"
+PI_DEFAULT_GPU="${PI_DEFAULT_GPU:-A100_80GB}"
 PI_DEFAULT_GPU_COUNT="${PI_DEFAULT_GPU_COUNT:-1}"
 PI_DEFAULT_DISK_SIZE="${PI_DEFAULT_DISK_SIZE:-200}"
 PI_IMAGE="${PI_IMAGE:-}"
