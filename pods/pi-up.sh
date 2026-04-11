@@ -23,7 +23,7 @@ SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
 PI_DEFAULT_GPU="${PI_DEFAULT_GPU:-A100_80GB}"
 PI_DEFAULT_GPU_COUNT="${PI_DEFAULT_GPU_COUNT:-1}"
 PI_DEFAULT_DISK_SIZE="${PI_DEFAULT_DISK_SIZE:-200}"
-PI_IMAGE="${PI_IMAGE:-}"
+PI_IMAGE="${PI_IMAGE:-ubuntu_22_cuda_12}"
 PI_REPO_URL="${PI_REPO_URL:-}"
 PI_REPO_BRANCH="${PI_REPO_BRANCH:-main}"
 PI_SETUP_CMD="${PI_SETUP_CMD:-bash setup.sh}"
@@ -69,6 +69,11 @@ require_active_pod() {
     echo "$pod_id"
 }
 
+is_running() {
+    local s="${1,,}"  # lowercase
+    [[ "$s" == "running" || "$s" == "active" ]]
+}
+
 # ── Commands ────────────────────────────────────────────────────────────────
 
 cmd_up() {
@@ -98,7 +103,7 @@ cmd_up() {
     if [ -n "$existing" ]; then
         local status
         status=$(prime pods status "$existing" --output json --plain 2>/dev/null | jq -r '.status // "unknown"') || status="unknown"
-        if [ "$status" = "running" ]; then
+        if is_running "$status"; then
             die "Pod $existing is already running. Only one pod allowed at a time.
   Use 'pi-up.sh ssh' to connect, or 'pi-up.sh down' to terminate it first."
         else
@@ -170,7 +175,7 @@ cmd_up() {
     while [ "$elapsed" -lt "$timeout" ]; do
         pod_status=$(prime pods status "$pod_id" --output json --plain 2>/dev/null | jq -r '.status // "unknown"') || pod_status="unknown"
 
-        if [ "$pod_status" = "running" ]; then
+        if is_running "$pod_status"; then
             break
         fi
 
@@ -179,8 +184,8 @@ cmd_up() {
         elapsed=$((elapsed + poll_interval))
     done
 
-    if [ "$pod_status" != "running" ]; then
-        die "Pod did not reach 'running' state within ${timeout}s (last status: $pod_status)"
+    if ! is_running "$pod_status"; then
+        die "Pod did not reach running state within ${timeout}s (last status: $pod_status)"
     fi
 
     ok "Pod is running!"
