@@ -90,15 +90,17 @@ cmd_up() {
     local gpu="$PI_DEFAULT_GPU"
     local gpu_count="$PI_DEFAULT_GPU_COUNT"
     local disk_size="$PI_DEFAULT_DISK_SIZE"
+    local allow_spot=false
 
     # Parse flags
     while [[ $# -gt 0 ]]; do
         case "$1" in
-            --name)  name="$2"; shift 2 ;;
-            --gpu)   gpu="$2"; shift 2 ;;
-            --count) gpu_count="$2"; shift 2 ;;
-            --disk)  disk_size="$2"; shift 2 ;;
-            *)       die "Unknown flag: $1" ;;
+            --name)       name="$2"; shift 2 ;;
+            --gpu)        gpu="$2"; shift 2 ;;
+            --count)      gpu_count="$2"; shift 2 ;;
+            --disk)       disk_size="$2"; shift 2 ;;
+            --allow-spot) allow_spot=true; shift ;;
+            *)            die "Unknown flag: $1" ;;
         esac
     done
 
@@ -187,12 +189,31 @@ cmd_up() {
         die "Try a different GPU type or check later."
     fi
 
-    # Pick the first available resource ID
-    local resource_id
-    resource_id=$(echo "$avail" | jq -r '.gpu_resources[0].id')
-    local price
-    price=$(echo "$avail" | jq -r '.gpu_resources[0].price_per_hour // "unknown"')
-    ok "Found $avail_count option(s). Using resource: $resource_id (\$$price/hr)"
+    # ── Filter spot vs on-demand ────────────────────────────────────────────
+    local filtered_resources
+    if [ "$allow_spot" = "true" ]; then
+        filtered_resources=$(echo "$avail" | jq -c '[.gpu_resources[]]')
+    else
+        filtered_resources=$(echo "$avail" | jq -c '[.gpu_resources[] | select(.is_spot != true)]')
+    fi
+
+    local filtered_count
+    filtered_count=$(echo "$filtered_resources" | jq 'length')
+
+    if [ "${filtered_count:-0}" -eq 0 ]; then
+        if [ "$allow_spot" = "false" ]; then
+            warn "No on-demand $gpu (x$gpu_count) available. Re-run with --allow-spot to include spot instances."
+        fi
+        die "No usable resources available right now."
+    fi
+
+    local resource_id is_spot price spot_label
+    resource_id=$(echo "$filtered_resources" | jq -r '.[0].id')
+    is_spot=$(echo "$filtered_resources" | jq -r '.[0].is_spot // false')
+    price=$(echo "$filtered_resources" | jq -r '.[0].price_per_hour // "unknown"')
+    spot_label="[ON-DEMAND]"
+    [ "$is_spot" = "true" ] && spot_label="[SPOT]"
+    ok "Found $filtered_count option(s). Using resource: $resource_id $spot_label (\$$price/hr)"
 
     # ── Create pod ──────────────────────────────────────────────────────────
     info "Creating pod..."
@@ -377,7 +398,7 @@ usage() {
 ${BOLD}pi-up.sh${NC} — Prime Intellect pod lifecycle management
 
 ${BOLD}Usage:${NC}
-  pi-up.sh up [--name NAME] [--gpu TYPE] [--count N] [--disk GB]
+  pi-up.sh up [--name NAME] [--gpu TYPE] [--count N] [--disk GB] [--allow-spot]
   pi-up.sh ssh
   pi-up.sh down
   pi-up.sh status
@@ -397,6 +418,7 @@ ${BOLD}Config:${NC}
 ${BOLD}Examples:${NC}
   pi-up.sh up                          # Use defaults from config
   pi-up.sh up --gpu H100_80GB --name my-pod
+  pi-up.sh up --gpu H200 --allow-spot  # Include spot instances
   pi-up.sh ssh                         # Connect to active pod
   pi-up.sh down                        # Terminate active pod
 EOF
