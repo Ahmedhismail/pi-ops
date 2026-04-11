@@ -6,18 +6,36 @@ set -euo pipefail
 REPO_URL="${PI_REPO_URL:-}"
 REPO_BRANCH="${PI_REPO_BRANCH:-main}"
 SETUP_CMD="${PI_SETUP_CMD:-bash setup.sh}"
-REPO_DIR="/root/workspace"
+REPO_DIR="$HOME/workspace"
 
 echo "============================================"
 echo "  pi-bootstrap: setting up pod"
 echo "============================================"
 
 # ── 1. Source uploaded .env (needed for GIT_PAT before clone) ─────────────
-if [ -f "/root/.pi-env-upload" ]; then
+# Use Python to parse the .env so KEY = VALUE (python-dotenv format) works.
+if [ -f "$HOME/.pi-env-upload" ]; then
     echo "[..] Loading secrets from uploaded .env..."
-    set -a  # auto-export all sourced vars
-    source /root/.pi-env-upload
-    set +a
+    eval "$(python3 -c "
+try:
+    from dotenv import dotenv_values
+    loader = dotenv_values
+except ImportError:
+    # Fallback: simple parser that strips spaces around = and quotes
+    def loader(path):
+        d = {}
+        with open(path) as f:
+            for line in f:
+                line = line.strip()
+                if not line or line.startswith('#') or '=' not in line:
+                    continue
+                k, _, v = line.partition('=')
+                d[k.strip()] = v.strip().strip('\"').strip(\"'\")
+        return d
+for k, v in loader('$HOME/.pi-env-upload').items():
+    v = (v or '').replace(\"'\", \"'\\\\''\" )
+    print(f\"export {k}='{v}'\")
+")"
     echo "[OK] Secrets loaded"
 fi
 
@@ -61,15 +79,19 @@ else
     fi
 
     # ── 5. Copy .env into repo ────────────────────────────────────────────
-    if [ -f "/root/.pi-env-upload" ]; then
-        cp /root/.pi-env-upload "$REPO_DIR/.env"
-        rm /root/.pi-env-upload
+    if [ -f "$HOME/.pi-env-upload" ]; then
+        cp "$HOME/.pi-env-upload" "$REPO_DIR/.env"
+        rm "$HOME/.pi-env-upload"
         echo "[OK] .env copied into repo"
     fi
 
     # ── 6. Run setup command ────────────────────────────────────────────────
     echo "[..] Running setup: $SETUP_CMD"
     cd "$REPO_DIR"
+    # Fix .config ownership if root owns it (some provider images ship this way)
+    sudo chown -R "$USER:$USER" "$HOME/.config" 2>/dev/null || true
+    # Prevent uv from writing fish/shell configs (avoids permission errors)
+    export UV_NO_MODIFY_PATH=1
     eval "$SETUP_CMD"
     echo "[OK] Setup complete"
 fi
