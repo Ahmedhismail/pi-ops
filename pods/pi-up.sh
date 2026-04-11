@@ -231,13 +231,25 @@ cmd_up() {
     local create_output
     create_output=$(prime pods create "${create_args[@]}" 2>&1)
 
-    # Extract pod ID from create output — try JSON first, then plain text
+    # Extract pod ID from create output — try JSON, then dashed UUID, then 32-char hex,
+    # then fall back to querying the pod list for the newest entry.
     local pod_id=""
     pod_id=$(echo "$create_output" | jq -r '.id // empty' 2>/dev/null) || true
 
     if [ -z "$pod_id" ]; then
-        # Fallback: look for a UUID pattern in the output
-        pod_id=$(echo "$create_output" | grep -oE '[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}' | head -1) || true
+        pod_id=$(echo "$create_output" \
+            | grep -oE '[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}' \
+            | head -1) || true
+    fi
+
+    if [ -z "$pod_id" ]; then
+        pod_id=$(echo "$create_output" | grep -oE '\b[0-9a-f]{32}\b' | head -1) || true
+    fi
+
+    if [ -z "$pod_id" ]; then
+        warn "Could not parse ID from create output; querying pod list..."
+        pod_id=$(prime pods list --output json --plain 2>/dev/null \
+            | jq -r '.pods | sort_by(.created_at) | last | .id // empty') || true
     fi
 
     if [ -z "$pod_id" ]; then
@@ -286,6 +298,14 @@ cmd_up() {
 
     info "SSH: ${ssh_user}@${ssh_host} -p ${ssh_port}"
 
+    # Derive remote home dir from the SSH user (root vs ubuntu/etc.)
+    local remote_home
+    if [ "$ssh_user" = "root" ]; then
+        remote_home="/root"
+    else
+        remote_home="/home/$ssh_user"
+    fi
+
     # ── Bootstrap ───────────────────────────────────────────────────────────
     local bootstrap_path="$SCRIPT_DIR/pi-bootstrap.sh"
     if [ ! -f "$bootstrap_path" ]; then
@@ -313,23 +333,37 @@ cmd_up() {
     fi
 
     # SCP bootstrap script
-    scp -o StrictHostKeyChecking=no -P "$ssh_port" "$bootstrap_path" "${ssh_user}@${ssh_host}:/root/pi-bootstrap.sh"
+    scp -o StrictHostKeyChecking=no -P "$ssh_port" "$bootstrap_path" "${ssh_user}@${ssh_host}:${remote_home}/pi-bootstrap.sh"
 
     # SCP .env file if it exists
     if [ -n "$PI_ENV_FILE" ] && [ -f "$PI_ENV_FILE" ]; then
         info "Uploading .env file..."
-        scp -o StrictHostKeyChecking=no -P "$ssh_port" "$PI_ENV_FILE" "${ssh_user}@${ssh_host}:/root/.pi-env-upload"
+        scp -o StrictHostKeyChecking=no -P "$ssh_port" "$PI_ENV_FILE" "${ssh_user}@${ssh_host}:${remote_home}/.pi-env-upload"
     fi
 
     # Run bootstrap
     info "Running bootstrap on pod..."
     ssh -o StrictHostKeyChecking=no -p "$ssh_port" "${ssh_user}@${ssh_host}" \
-        "PI_REPO_URL='$PI_REPO_URL' PI_REPO_BRANCH='$PI_REPO_BRANCH' PI_SETUP_CMD='$PI_SETUP_CMD' bash /root/pi-bootstrap.sh"
+        "PI_REPO_URL='$PI_REPO_URL' PI_REPO_BRANCH='$PI_REPO_BRANCH' PI_SETUP_CMD='$PI_SETUP_CMD' bash ${remote_home}/pi-bootstrap.sh"
 
     echo ""
     ok "Pod is ready!"
     echo -e "  ${BOLD}SSH:${NC}  pi-up.sh ssh  ${BLUE}(or: prime pods ssh $pod_id)${NC}"
     echo -e "  ${BOLD}Stop:${NC} pi-up.sh down"
+
+    # ── Update POD_SSH_HOST in project .env ─────────────────────────────────
+    # Keep cron/monitoring scripts pointed at the new pod automatically.
+    local env_file="${PI_ENV_FILE:-.env}"
+    if [ -f "$env_file" ]; then
+        local pod_ssh="${ssh_user}@${ssh_host}"
+        if grep -q '^POD_SSH_HOST=' "$env_file"; then
+            sed -i.bak "s|^POD_SSH_HOST=.*|POD_SSH_HOST=$pod_ssh|" "$env_file"
+            ok "Updated POD_SSH_HOST=$pod_ssh in $env_file"
+        else
+            echo "POD_SSH_HOST=$pod_ssh" >> "$env_file"
+            ok "Appended POD_SSH_HOST=$pod_ssh to $env_file"
+        fi
+    fi
 }
 
 cmd_ssh() {
