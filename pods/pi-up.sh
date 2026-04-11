@@ -74,6 +74,13 @@ is_running() {
     [[ "$s" == "running" || "$s" == "active" ]]
 }
 
+# Returns known GPU type slugs from prime, one per line. Empty if unavailable.
+get_gpu_types() {
+    prime availability gpu-types --output json --plain 2>/dev/null \
+        | jq -r '.gpu_types[]? // .[]?' 2>/dev/null \
+        || true
+}
+
 # ── Commands ────────────────────────────────────────────────────────────────
 
 cmd_up() {
@@ -112,16 +119,72 @@ cmd_up() {
         fi
     fi
 
+    # ── Resolve GPU slug ────────────────────────────────────────────────────
+    # Query the live GPU type list and fuzzy-match if the user passed a short
+    # name (e.g. "H200" instead of "H200_96GB"). Pre-populates avail/avail_count
+    # when we already did availability checks during multi-candidate resolution.
+    local all_gpu_types avail="" avail_count=""
+    all_gpu_types=$(get_gpu_types)
+
+    if [ -n "$all_gpu_types" ] && ! echo "$all_gpu_types" | grep -qx "$gpu"; then
+        local candidates
+        candidates=$(echo "$all_gpu_types" | grep -i "$gpu" || true)
+
+        if [ -z "$candidates" ]; then
+            err "Unknown GPU type: '$gpu'"
+            err "Known types:"
+            echo "$all_gpu_types" | sed 's/^/  /' >&2
+            die "Pass one of the above to --gpu."
+        fi
+
+        local candidate_count
+        candidate_count=$(echo "$candidates" | wc -l | tr -d ' ')
+
+        if [ "$candidate_count" -eq 1 ]; then
+            gpu=$(echo "$candidates" | tr -d '[:space:]')
+            info "Resolved --gpu to: $gpu"
+        else
+            # Multiple matches — check availability across each, take first with stock
+            info "Multiple matches for '$gpu': $(echo "$candidates" | tr '\n' ' ')"
+            info "Checking availability across candidates..."
+            local found_gpu=""
+            while IFS= read -r candidate; do
+                local c_avail c_count
+                c_avail=$(prime availability list --gpu-type "$candidate" --gpu-count "$gpu_count" \
+                    --output json --plain 2>/dev/null) || continue
+                c_count=$(echo "$c_avail" | jq -r '.total_count // 0' 2>/dev/null) || continue
+                if [ "${c_count:-0}" -gt 0 ]; then
+                    found_gpu="$candidate"
+                    avail="$c_avail"
+                    avail_count="$c_count"
+                    break
+                fi
+            done <<< "$candidates"
+
+            if [ -z "$found_gpu" ]; then
+                err "No availability for any match of '$gpu':"
+                echo "$candidates" | sed 's/^/  /' >&2
+                die "Try a different GPU type or check later."
+            fi
+            gpu="$found_gpu"
+            info "Using: $gpu"
+        fi
+    fi
+
     # ── Check availability ──────────────────────────────────────────────────
     info "Checking availability for $gpu (x$gpu_count)..."
-    local avail
-    avail=$(prime availability list --gpu-type "$gpu" --gpu-count "$gpu_count" --output json --plain 2>&1) || true
+    if [ -z "$avail" ]; then
+        avail=$(prime availability list --gpu-type "$gpu" --gpu-count "$gpu_count" --output json --plain 2>&1) || true
+        avail_count=$(echo "$avail" | jq -r '.total_count // 0' 2>/dev/null) || avail_count=0
+    fi
 
-    local avail_count
-    avail_count=$(echo "$avail" | jq -r '.total_count // 0' 2>/dev/null) || avail_count=0
-
-    if [ "$avail_count" -eq 0 ]; then
-        die "No $gpu (x$gpu_count) available right now. Try a different GPU type or check later."
+    if [ "${avail_count:-0}" -eq 0 ]; then
+        err "No $gpu (x$gpu_count) available right now."
+        if [ -n "$all_gpu_types" ]; then
+            err "Known GPU types (for reference):"
+            echo "$all_gpu_types" | sed 's/^/  /' >&2
+        fi
+        die "Try a different GPU type or check later."
     fi
 
     # Pick the first available resource ID
