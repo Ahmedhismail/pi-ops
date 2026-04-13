@@ -70,7 +70,8 @@ require_active_pod() {
 }
 
 is_running() {
-    local s="${1,,}"  # lowercase
+    local s
+    s=$(echo "$1" | tr '[:upper:]' '[:lower:]')
     [[ "$s" == "running" || "$s" == "active" ]]
 }
 
@@ -216,6 +217,11 @@ cmd_up() {
     ok "Found $filtered_count option(s). Using resource: $resource_id $spot_label (\$$price/hr)"
 
     # ── Create pod ──────────────────────────────────────────────────────────
+    # Pull vcpus/memory from the selected resource so prime doesn't prompt interactively.
+    local vcpus memory
+    vcpus=$(echo "$filtered_resources" | jq -r '.[0].vcpus // .[0].cpu_count // empty')
+    memory=$(echo "$filtered_resources" | jq -r '.[0].memory // .[0].ram // empty')
+
     info "Creating pod..."
     local create_args=(
         --id "$resource_id"
@@ -225,7 +231,9 @@ cmd_up() {
         --yes
         --plain
     )
-    [ -n "$name" ] && create_args+=(--name "$name")
+    [ -n "$vcpus" ]  && create_args+=(--vcpus "$vcpus")
+    [ -n "$memory" ] && create_args+=(--memory "$memory")
+    [ -n "$name" ]   && create_args+=(--name "$name")
     [ -n "$PI_IMAGE" ] && create_args+=(--image "$PI_IMAGE")
 
     local create_output
