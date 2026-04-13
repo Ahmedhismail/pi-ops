@@ -217,10 +217,10 @@ cmd_up() {
     ok "Found $filtered_count option(s). Using resource: $resource_id $spot_label (\$$price/hr)"
 
     # ── Create pod ──────────────────────────────────────────────────────────
-    # Pull vcpus/memory from the selected resource so prime doesn't prompt interactively.
+    # Pull vcpus/memory_gb from the selected resource so prime doesn't prompt interactively.
     local vcpus memory
-    vcpus=$(echo "$filtered_resources" | jq -r '.[0].vcpus // .[0].cpu_count // empty')
-    memory=$(echo "$filtered_resources" | jq -r '.[0].memory // .[0].ram // empty')
+    vcpus=$(echo "$filtered_resources" | jq -r '.[0].vcpus // empty')
+    memory=$(echo "$filtered_resources" | jq -r '.[0].memory_gb // empty')
 
     info "Creating pod..."
     local create_args=(
